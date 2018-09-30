@@ -2,16 +2,18 @@ defmodule GS do
 
   def main do
     # Take input arguments
-    GS.Supervisor.main()
-    # listen()
+
+    [num_nodes, topology, algorithm] = System.argv()
+    num_nodes = String.to_integer(num_nodes)
+    GS.Supervisor.main(num_nodes, topology, algorithm)
 
   end
 
-  def listen do
-    receive do
-      {:exit}  -> nil
-    end
-  end
+  # def listen do
+  #   receive do
+  #     {:exit}  -> nil
+  #   end
+  # end
 
 end
 
@@ -21,22 +23,29 @@ defmodule GS.Supervisor do
   """
   use Supervisor
 
-  def main do
-    # n -> Number of actors to be generated
-    n = 15
-    start = 1
-    {:ok, super_pid} = start_link(n)
-    worker_ids = get_worker_ids(%{}, Supervisor.which_children(super_pid), start)
-    send_neighbors(n, worker_ids)
-    start = :rand.uniform(n)
-    starter_pid = Map.get(worker_ids, start)
-    Process.send(starter_pid, {:receive_gossip, "message"}, [])
-    state = listen(n)
-    IO.inspect state
+  def main(num_nodes, topology, _) do
+    initialize(num_nodes, topology)
+
+    listen_to_children(num_nodes)
   end
 
-  def start_link(n) do
-    children = create_workers(n, [], n)
+  def initialize(num_nodes, topology) do
+    start = 1
+    {:ok, super_pid} = start_link(num_nodes)
+    worker_ids = get_worker_ids(%{}, Supervisor.which_children(super_pid), start)
+    send_neighbors(num_nodes, worker_ids)
+
+    begin_gossip(num_nodes, worker_ids)
+  end
+
+  def begin_gossip(num_nodes, worker_ids) do
+    start = :rand.uniform(num_nodes)
+    starter_pid = Map.get(worker_ids, start)
+    Process.send(starter_pid, {:receive_gossip, "message"}, [])
+  end
+
+  def start_link(num_children) do
+    children = create_workers(num_children, [], num_children)
     Supervisor.start_link(children, strategy: :one_for_one)
   end
 
@@ -44,12 +53,13 @@ defmodule GS.Supervisor do
     nil
   end
 
-  def listen(n) do
+  def listen_to_children(n) do
     receive do
-      {:received, pid} ->
+      {:received} ->
         n = n - 1
+        IO.puts n
         if n > 0 do
-          listen(n)
+          listen_to_children(n)
         end
     end
   end
@@ -75,7 +85,7 @@ defmodule GS.Supervisor do
     get_worker_ids(worker_ids, children, idx + 1)
   end
 
-  def get_worker_ids(worker_ids, [], idx) do
+  def get_worker_ids(worker_ids, [], _) do
     worker_ids
   end
 
@@ -113,9 +123,8 @@ defmodule GS.Worker do
 
   defp add_neighbors(state, message) do
     # TODO: modify the neighbors based upon the topology
-    idx = Map.get(state, :id)
-    new_state = Map.put(state, :neighbors, message)
 
+    new_state = Map.put(state, :neighbors, message)
     {:noreply, new_state}
   end
 
@@ -138,12 +147,12 @@ defmodule GS.Worker do
 
   defp receive_gossip(state, message) do
     count = Map.get(state, :count)
-    idx = Map.get(state, :id)
+    # idx = Map.get(state, :id)
 
     cond do
       count == 0 ->
         parent_pid = Map.get(state, :parent)
-        Process.send(parent_pid, {:received, self()}, [])
+        Process.send(parent_pid, {:received}, [])
         Process.send(self(), {:send_gossip, message}, [])
         new_state = Map.update!(state, :count, &(&1 + 1))
         {:noreply, new_state}
