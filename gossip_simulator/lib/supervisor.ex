@@ -23,16 +23,15 @@ defmodule GS.Supervisor do
 
   def main do
     # n -> Number of actors to be generated
-    n = 10000
+    n = 15
     start = 1
     {:ok, super_pid} = start_link(n)
     worker_ids = get_worker_ids(%{}, Supervisor.which_children(super_pid), start)
     send_neighbors(n, worker_ids)
     start = :rand.uniform(n)
     starter_pid = Map.get(worker_ids, start)
-    Process.send(starter_pid, {:gossip, "message"}, [])
+    Process.send(starter_pid, {:receive_gossip, "message"}, [])
     state = listen(n)
-    # :timer.sleep(1000)
     IO.inspect state
   end
 
@@ -46,12 +45,9 @@ defmodule GS.Supervisor do
   end
 
   def listen(n) do
-    # IO.puts n
     receive do
       {:received, pid} ->
         n = n - 1
-        # IO.puts n
-        # IO.puts n
         if n > 0 do
           listen(n)
         end
@@ -88,12 +84,8 @@ defmodule GS.Supervisor do
       worker_id = Map.get(worker_ids, n)
       Process.send(worker_id, {:add_neighbors, worker_ids}, [])
       send_neighbors(n-1, worker_ids)
-    else
-      # IO.puts "EXIT"
-      # {:exit}
     end
   end
-
 end
 
 defmodule GS.Worker do
@@ -104,59 +96,65 @@ defmodule GS.Worker do
   end
 
   def init(args) do
-    # IO.inspect args
     {:ok, args}
   end
 
   # Callbacks
 
   def handle_info({tag, message}, state) do
-
     case tag do
-      :add_neighbors ->
-        # TODO: modify the neighbors based upon the topology
-        idx = Map.get(state, :id)
-        new_state = Map.put(state, :neighbors, message)
-        # IO.inspect new_state
-        {:noreply, new_state}
-
-      :gossip ->
-        count = Map.get(state, :count)
-
-        cond do
-          count == 0 ->
-            parent_pid = Map.get(state, :parent)
-            Process.send(parent_pid, {:received, self()}, [])
-            Process.send(self(), {:send_gossip, message}, [])
-            new_state = Map.update!(state, :count, &(&1 + 1))
-            {:noreply, new_state}
-          count < 10 ->
-            new_state = Map.update!(state, :count, &(&1 + 1))
-            {:noreply, new_state}
-          true -> {:noreply, state}
-        end
-
-      :send_gossip ->
-        count = Map.get(state, :count)
-
-        if count < 10 do
-          num_neighbors = Map.get(state, :num_neighbors)
-          self_idx = Map.get(state, :id)
-          idx = get_neighbor_idx(self_idx, num_neighbors)
-          idx = :rand.uniform(num_neighbors)
-          neighbor = get_in(state, [:neighbors, idx])
-          # IO.inspect neighbor
-          Process.send(neighbor, {:gossip, message}, [])
-
-          #call yourself once in every 100 ms
-          Process.send_after(self(), {:send_gossip, message}, 500)
-        end
-
-        {:noreply, state}
+      :add_neighbors -> add_neighbors(state, message)
+      :receive_gossip -> receive_gossip(state, message)
+      :send_gossip -> send_gossip(state, message)
     end
   end
 
-  def get_neighbor_idx(self_idx, num_neighbors) do
+  # private functions
+
+  defp add_neighbors(state, message) do
+    # TODO: modify the neighbors based upon the topology
+    idx = Map.get(state, :id)
+    new_state = Map.put(state, :neighbors, message)
+
+    {:noreply, new_state}
+  end
+
+  defp send_gossip(state, message) do
+    count = Map.get(state, :count)
+
+    if count < 10 do
+      num_neighbors = Map.get(state, :num_neighbors)
+      self_idx = Map.get(state, :id)
+      idx = get_neighbor_idx(self_idx, num_neighbors)
+      neighbor = get_in(state, [:neighbors, idx])
+      Process.send(neighbor, {:receive_gossip, message}, [])
+
+      #call yourself once in every 100 ms
+      Process.send_after(self(), {:send_gossip, message}, 100)
+    end
+
+    {:noreply, state}
+  end
+
+  defp receive_gossip(state, message) do
+    count = Map.get(state, :count)
+    idx = Map.get(state, :id)
+
+    cond do
+      count == 0 ->
+        parent_pid = Map.get(state, :parent)
+        Process.send(parent_pid, {:received, self()}, [])
+        Process.send(self(), {:send_gossip, message}, [])
+        new_state = Map.update!(state, :count, &(&1 + 1))
+        {:noreply, new_state}
+      count < 10 ->
+        new_state = Map.update!(state, :count, &(&1 + 1))
+        {:noreply, new_state}
+      true -> {:noreply, state}
+    end
+  end
+
+  defp get_neighbor_idx(self_idx, num_neighbors) do
     idx = :rand.uniform(num_neighbors)
     if idx == self_idx do
       get_neighbor_idx(self_idx, num_neighbors)
