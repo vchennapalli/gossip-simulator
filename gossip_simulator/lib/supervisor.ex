@@ -1,8 +1,6 @@
 defmodule GS do
 
   def main do
-    # Take input arguments
-
     [num_nodes, topology, algorithm] = System.argv()
     num_nodes = String.to_integer(num_nodes)
     GS.Supervisor.main(num_nodes, topology, algorithm)
@@ -25,10 +23,20 @@ defmodule GS.Supervisor do
 
   def main(num_nodes, topology, algorithm) do
 
+    topology =
+      if topology == "rand2D" and num_nodes < 600 do
+        IO.puts "No. of nodes is < 600. To avoid the case of non-convergence, modifying the topology to 2D grid"
+        "2D"
+      else
+        topology
+      end
+
     num_nodes =
       case topology do
         "3D" -> :math.pow(num_nodes, 1 / 3) |> :math.ceil() |> Kernel.trunc() |> :math.pow(3) |> Kernel.trunc()
         "torus" -> :math.pow(num_nodes, 1 / 2) |> :math.ceil() |> Kernel.trunc() |> :math.pow(2) |> Kernel.trunc()
+        "2D" -> :math.pow(num_nodes, 1 / 2) |> :math.ceil() |> Kernel.trunc() |> :math.pow(2) |> Kernel.trunc()
+        _ -> num_nodes
       end
 
     initialize(num_nodes, topology, algorithm)
@@ -46,16 +54,23 @@ defmodule GS.Supervisor do
   def initialize(num_nodes, topology, algorithm) do
     start = num_nodes
     {:ok, super_pid} = start_link(num_nodes, topology, algorithm)
-    worker_ids = get_worker_ids(%{}, Supervisor.which_children(super_pid), start)
-    send_neighbors(num_nodes, worker_ids)
+    worker_ids = get_worker_ids(%{}, Supervisor.which_children(super_pid), start, topology)
+    send_neighbors(num_nodes, worker_ids, topology)
     are_children_ready(num_nodes)
-    begin_gossip(num_nodes, worker_ids, algorithm)
+    begin_gossip(num_nodes, worker_ids, topology, algorithm)
   end
 
-  def begin_gossip(num_nodes, worker_ids, algorithm) do
+  def begin_gossip(num_nodes, worker_ids, topology, algorithm) do
     start = :rand.uniform(num_nodes)
-    starter_pid = Map.get(worker_ids, start)
 
+    {starter_pid, _, _} =
+      if topology == "rand2D" do
+        Map.get(worker_ids, start)
+      else
+        {Map.get(worker_ids, start), nil, nil}
+      end
+
+    # IO.inspect starter_pid
     if algorithm == "gossip" do
       Process.send(starter_pid, {:receive_gossip, "message"}, [])
     else
@@ -132,21 +147,33 @@ defmodule GS.Supervisor do
     end
   end
 
-  def get_worker_ids(worker_ids, [child | children], idx) do
+  def get_worker_ids(worker_ids, [child | children], idx, topology) do
     {_, id, _, _} = child
+    id =
+      if topology == "rand2D" do
+        {id, :rand.uniform() |> Float.round(4), :rand.uniform() |> Float.round(4)}
+      else
+        id
+      end
     worker_ids = Map.put(worker_ids, idx, id)
-    get_worker_ids(worker_ids, children, idx - 1)
+    get_worker_ids(worker_ids, children, idx - 1, topology)
   end
 
-  def get_worker_ids(worker_ids, [], _) do
+  def get_worker_ids(worker_ids, [], _, _) do
     worker_ids
   end
 
-  def send_neighbors(n, worker_ids) do
+  def send_neighbors(n, worker_ids, topology) do
     if n > 0 do
-      worker_id = Map.get(worker_ids, n)
+      {worker_id, _, _} =
+        if topology == "rand2D" do
+          Map.get(worker_ids, n)
+        else
+          {Map.get(worker_ids, n), nil, nil}
+        end
+
       Process.send(worker_id, {:add_neighbors, worker_ids}, [])
-      send_neighbors(n-1, worker_ids)
+      send_neighbors(n-1, worker_ids, topology)
     end
   end
 end
@@ -165,6 +192,7 @@ defmodule GS.Worker do
   # Callbacks
 
   def handle_info({tag, message}, state) do
+
     case tag do
       :add_neighbors -> add_neighbors(state, message)
 
@@ -183,6 +211,7 @@ defmodule GS.Worker do
     {neighbors, num_neighbors} =
       case topology do
         "full" -> get_full_neighbors(state, all_nodes)
+        "2D" -> get_2D_neighbors(state, all_nodes)
         "3D" -> get_3D_neighbors(state, all_nodes)
         "rand2D" -> get_rand2D_neighbors(state, all_nodes)
         "torus" -> get_torus_neighbors(state, all_nodes)
@@ -204,6 +233,42 @@ defmodule GS.Worker do
     neighbors = Map.put(all_nodes, idx, last_pid)
     neighbors = Map.delete(neighbors, num_nodes)
     {neighbors, num_nodes - 1}
+  end
+
+  defp get_2D_neighbors(state, all_nodes) do
+    num_nodes = Map.get(state, :num_nodes)
+    idx = Map.get(state, :id)
+    side = :math.pow(num_nodes, 1/2) |> :math.ceil() |> Kernel.trunc()
+
+    {y, x} = {div(idx, side), rem(idx, side)}
+    {y, x} =
+      if x == 0 do
+        {y - 1, side}
+      else
+        {y, x}
+      end
+
+    num_neighbors = 1
+    offsets = [{0, 1}, {0, -1}, {1, 0}, {-1, 0}]
+    get_possible_2D_neighbors(all_nodes, {x, y}, offsets, %{}, side, num_neighbors)
+
+  end
+
+  defp get_possible_2D_neighbors(all_nodes, {x, y}, [{xo, yo} | offsets], neighbors, side, num_neighbors) do
+    {xn, yn} = {x + xo, y + yo}
+    {neighbors, num_neighbors} =
+      if 1 <= xn and xn <= side and 0 <= yn and yn < side do
+        neighbor_idx = xn + (yn * side)
+        {Map.put(neighbors, num_neighbors, Map.get(all_nodes, neighbor_idx)), num_neighbors + 1}
+      else
+        {neighbors, num_neighbors}
+      end
+
+    get_possible_2D_neighbors(all_nodes, {x, y}, offsets, neighbors, side, num_neighbors)
+  end
+
+  defp get_possible_2D_neighbors(_, _, [], neighbors, _, num_neighbors) do
+    {neighbors, num_neighbors - 1}
   end
 
   defp get_3D_neighbors(state, all_nodes) do
@@ -249,9 +314,34 @@ defmodule GS.Worker do
     {neighbors, num_neighbors - 1}
   end
 
+  defp get_rand2D_neighbors(state, all_nodes) do
+    num_nodes = Map.get(state, :num_nodes)
+    idx = Map.get(state, :id)
+    {_, x, y} = Map.get(all_nodes, idx)
+    last_tuple = Map.get(all_nodes, num_nodes)
+    all_nodes = Map.put(all_nodes, idx, last_tuple)
+    all_nodes = Map.delete(all_nodes, num_nodes)
+    num_nodes = num_nodes - 1
+    num_neighbors = 1
+    get_possible_rand2D_neighbors(all_nodes, {x, y}, %{}, num_neighbors, num_nodes)
+  end
 
-  defp get_rand2D_neighbors(_state, _all_nodes) do
+  defp get_possible_rand2D_neighbors(all_nodes, {x, y}, neighbors, num_neighbors, idx) do
 
+    {neighbors, num_neighbors} =
+      if idx > 0 do
+        {neighbor_pid, xo, yo} = Map.get(all_nodes, idx)
+        distance = :math.sqrt(:math.pow(x - xo, 2) + :math.pow(y - yo, 2))
+        {neighbors, num_neighbors} =
+        if distance <= 1.0 do
+          {Map.put(neighbors, num_neighbors, neighbor_pid), num_neighbors + 1}
+        else
+          {neighbors, num_neighbors}
+        end
+        get_possible_rand2D_neighbors(all_nodes, {x, y}, neighbors, num_neighbors, idx-1)
+      else
+        {neighbors, num_neighbors - 1}
+      end
   end
 
   defp get_torus_neighbors(state, all_nodes) do
