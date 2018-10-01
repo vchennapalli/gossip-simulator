@@ -245,17 +245,59 @@ defmodule GS.Worker do
     get_possible_3D_neighbors(all_nodes, {x, y, z}, offsets, neighbors, side, num_neighbors)
   end
 
-  defp get_possible_3D_neighbors(_all_nodes, _coords, [], neighbors, _side, num_neighbors) do
+  defp get_possible_3D_neighbors(_, _, [], neighbors, _, num_neighbors) do
     {neighbors, num_neighbors - 1}
   end
 
 
-  defp get_rand2D_neighbors(_state, _message) do
+  defp get_rand2D_neighbors(_state, _all_nodes) do
 
   end
 
-  defp get_torus_neighbors(_state, _message) do
+  defp get_torus_neighbors(state, all_nodes) do
+    num_nodes = Map.get(state, :num_nodes)
+    idx = Map.get(state, :id)
+    side = :math.pow(num_nodes, 1/2) |> :math.ceil() |> Kernel.trunc()
 
+    {y, x} = {div(idx, side), rem(idx, side)}
+    {y, x} =
+      if x == 0 do
+        {y - 1, side}
+      else
+        {y, x}
+      end
+
+    num_neighbors = 1
+    offsets = [{0, 1}, {0, -1}, {1, 0}, {-1, 0}]
+    get_possible_torus_neighbors(all_nodes, {x, y}, offsets, %{}, side, num_neighbors)
+  end
+
+
+  defp get_possible_torus_neighbors(all_nodes, {x, y}, [{xo, yo} | offsets], neighbors, side, num_neighbors) do
+    {xn, yn} = {x + xo, y + yo}
+
+    xn =
+      cond do
+        xn == 0 -> side
+        xn == side + 1 -> 1
+        true -> xn
+      end
+
+    yn =
+      cond do
+        yn == -1 -> side - 1
+        yn == side -> 0
+        true -> yn
+      end
+
+    neighbor_idx = xn + (yn * side)
+    neighbors = Map.put(neighbors, num_neighbors, Map.get(all_nodes, neighbor_idx))
+
+    get_possible_torus_neighbors(all_nodes, {x, y}, offsets, neighbors, side, num_neighbors + 1)
+  end
+
+  defp get_possible_torus_neighbors(_, _, [], neighbors, _, num_neighbors) do
+    {neighbors, num_neighbors - 1}
   end
 
   defp get_line_neighbors(state, message) do
