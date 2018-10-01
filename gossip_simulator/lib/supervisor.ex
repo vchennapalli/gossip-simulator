@@ -24,6 +24,13 @@ defmodule GS.Supervisor do
   use Supervisor
 
   def main(num_nodes, topology, algorithm) do
+
+    num_nodes =
+      case topology do
+        "3D" -> :math.pow(num_nodes, 1 / 3) |> :math.ceil() |> Kernel.trunc() |> :math.pow(3) |> Kernel.trunc()
+        "torus" -> :math.pow(num_nodes, 1 / 2) |> :math.ceil() |> Kernel.trunc() |> :math.pow(2) |> Kernel.trunc()
+      end
+
     initialize(num_nodes, topology, algorithm)
 
     if algorithm == "gossip" do
@@ -170,20 +177,19 @@ defmodule GS.Worker do
 
   # private functions
 
-  defp add_neighbors(state, message) do
+  defp add_neighbors(state, all_nodes) do
     topology = Map.get(state, :topology)
-
-    # TODO: Update sphere to whatever
+    idx = Map.get(state, :id)
     {neighbors, num_neighbors} =
       case topology do
-        "full" -> get_full_neighbors(state, message)
-        "3D" -> get_3D_neighbors(state, message)
-        "rand2D" -> get_rand2D_neighbors(state, message)
-        "sphere" -> get_sphere_neighbors(state, message)
-        "line" -> get_line_neighbors(state, message)
-        "imp2D" -> get_imp2D_neighbors(state, message)
+        "full" -> get_full_neighbors(state, all_nodes)
+        "3D" -> get_3D_neighbors(state, all_nodes)
+        "rand2D" -> get_rand2D_neighbors(state, all_nodes)
+        "torus" -> get_torus_neighbors(state, all_nodes)
+        "line" -> get_line_neighbors(state, all_nodes)
+        "imp2D" -> get_imp2D_neighbors(state, all_nodes)
       end
-
+    # IO.inspect {idx, neighbors}
     new_state = Map.put(state, :neighbors, neighbors)
     new_state = Map.put(new_state, :num_neighbors, num_neighbors)
     super_pid = Map.get(new_state, :parent)
@@ -191,24 +197,64 @@ defmodule GS.Worker do
     {:noreply, new_state}
   end
 
-  defp get_full_neighbors(state, message) do
-    num_neighbors = Map.get(state, :num_nodes)
+  defp get_full_neighbors(state, all_nodes) do
+    num_nodes = Map.get(state, :num_nodes)
     idx = Map.get(state, :id)
-    last_pid = Map.get(message, num_neighbors)
-    neighbors = Map.put(message, idx, last_pid)
-    neighbors = Map.delete(neighbors, num_neighbors)
+    last_pid = Map.get(all_nodes, num_nodes)
+    neighbors = Map.put(all_nodes, idx, last_pid)
+    neighbors = Map.delete(neighbors, num_nodes)
+    {neighbors, num_nodes - 1}
+  end
+
+  defp get_3D_neighbors(state, all_nodes) do
+    num_nodes = Map.get(state, :num_nodes)
+    idx = Map.get(state, :id)
+    side = :math.pow(num_nodes, 1/3) |> :math.ceil() |> Kernel.trunc()
+
+    {z, yx} = {div(idx, side * side), rem(idx, side * side)}
+    {z, yx} =
+      if yx == 0 do
+        {z - 1, side * side}
+      else
+        {z, yx}
+      end
+
+    {y, x} = {div(yx, side), rem(yx, side)}
+    {y, x} =
+      if x == 0 do
+        {y - 1, side}
+      else
+        {y, x}
+      end
+
+    num_neighbors = 1
+    offsets = [{1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}]
+    get_possible_3D_neighbors(all_nodes, {x, y, z}, offsets, %{}, side, num_neighbors)
+  end
+
+  defp get_possible_3D_neighbors(all_nodes, {x, y, z}, [{xo, yo, zo} | offsets], neighbors, side, num_neighbors) do
+
+    {xn, yn, zn} = {x + xo, y + yo, z + zo}
+    {neighbors, num_neighbors} =
+      if 1 <= xn and xn <= side and 0 <= yn and yn < side and 0 <= zn and zn < side do
+        neighbor_idx = xn + (yn * side) + (zn * side * side)
+        {Map.put(neighbors, num_neighbors, Map.get(all_nodes, neighbor_idx)), num_neighbors + 1}
+      else
+        {neighbors, num_neighbors}
+      end
+    get_possible_3D_neighbors(all_nodes, {x, y, z}, offsets, neighbors, side, num_neighbors)
+  end
+
+  defp get_possible_3D_neighbors(_all_nodes, _coords, [], neighbors, _side, num_neighbors) do
     {neighbors, num_neighbors - 1}
   end
 
-  defp get_3D_neighbors(_state, _message) do
-
-  end
 
   defp get_rand2D_neighbors(_state, _message) do
 
   end
 
-  defp get_sphere_neighbors(_state, _message) do
+  defp get_torus_neighbors(_state, _message) do
 
   end
 
