@@ -7,12 +7,6 @@ defmodule GS do
 
   end
 
-  # def listen do
-  #   receive do
-  #     {:exit}  -> nil
-  #   end
-  # end
-
 end
 
 defmodule GS.Supervisor do
@@ -44,7 +38,7 @@ defmodule GS.Supervisor do
     if algorithm == "gossip" do
       hear_children_gossip(num_nodes)
     else
-      cpc = 0.1  # convergence percentage condition
+      cpc = 0.0  # convergence percentage condition
       threshold = round(num_nodes * cpc)
       _ratio = hear_children_sum(num_nodes, threshold)
     end
@@ -73,9 +67,10 @@ defmodule GS.Supervisor do
     # IO.inspect starter_pid
     if algorithm == "gossip" do
       Process.send(starter_pid, {:receive_gossip, "message"}, [])
-    else
-      Process.send(starter_pid, {:push_sum, {0, 0}}, [])
     end
+    # else
+    #   Process.send(starter_pid, {:push_sum, {0, 0}}, [])
+    # end
 
   end
 
@@ -102,7 +97,7 @@ defmodule GS.Supervisor do
     receive do
       {:received} ->
         n = n - 1
-        IO.puts n
+        # IO.puts n
         if n > 0 do
           hear_children_gossip(n)
         end
@@ -112,6 +107,7 @@ defmodule GS.Supervisor do
   def hear_children_sum(n, threshold) do
     receive do
       {:converged, ratio} ->
+        IO.puts "#{ratio}, #{n}"
         n = n - 1
         if n > threshold do
           hear_children_sum(n, threshold)
@@ -130,10 +126,12 @@ defmodule GS.Supervisor do
             [%{
               :id => n,
               :count => 0,
+              :max_count => 3,
               :parent => self(),
               :num_nodes => num_nodes,
-              # :sum => n,
-              # :weight => 1,
+              :sum => n,
+              :weight => 1,
+              :ratio => n,
               :topology => topology,
               :algorithm => algorithm
             }]
@@ -186,6 +184,10 @@ defmodule GS.Worker do
   end
 
   def init(args) do
+    algorithm = Map.get(args, :algorithm)
+    if algorithm == "push-sum" do
+      Process.send_after(self(), {:push_sum, nil}, 100)
+    end
     {:ok, args}
   end
 
@@ -200,6 +202,7 @@ defmodule GS.Worker do
       :send_gossip -> send_gossip(state, message)
 
       :push_sum -> push_sum(state, message)
+      :pull_sum -> pull_sum(state, message)
     end
   end
 
@@ -207,7 +210,7 @@ defmodule GS.Worker do
 
   defp add_neighbors(state, all_nodes) do
     topology = Map.get(state, :topology)
-    idx = Map.get(state, :id)
+    # idx = Map.get(state, :id)
     {neighbors, num_neighbors} =
       case topology do
         "full" -> get_full_neighbors(state, all_nodes)
@@ -328,20 +331,19 @@ defmodule GS.Worker do
 
   defp get_possible_rand2D_neighbors(all_nodes, {x, y}, neighbors, num_neighbors, idx) do
 
-    {neighbors, num_neighbors} =
-      if idx > 0 do
-        {neighbor_pid, xo, yo} = Map.get(all_nodes, idx)
-        distance = :math.sqrt(:math.pow(x - xo, 2) + :math.pow(y - yo, 2))
-        {neighbors, num_neighbors} =
-        if distance <= 1.0 do
-          {Map.put(neighbors, num_neighbors, neighbor_pid), num_neighbors + 1}
-        else
-          {neighbors, num_neighbors}
-        end
-        get_possible_rand2D_neighbors(all_nodes, {x, y}, neighbors, num_neighbors, idx-1)
+    if idx > 0 do
+      {neighbor_pid, xo, yo} = Map.get(all_nodes, idx)
+      distance = :math.sqrt(:math.pow(x - xo, 2) + :math.pow(y - yo, 2))
+      {neighbors, num_neighbors} =
+      if distance <= 1.0 do
+        {Map.put(neighbors, num_neighbors, neighbor_pid), num_neighbors + 1}
       else
-        {neighbors, num_neighbors - 1}
+        {neighbors, num_neighbors}
       end
+      get_possible_rand2D_neighbors(all_nodes, {x, y}, neighbors, num_neighbors, idx-1)
+    else
+      {neighbors, num_neighbors - 1}
+    end
   end
 
   defp get_torus_neighbors(state, all_nodes) do
@@ -490,39 +492,62 @@ defmodule GS.Worker do
     end
   end
 
-  defp push_sum(state, message) do
-    {received_sum, received_weight} = message
+  defp push_sum(state, _) do
     count = Map.get(state, :count)
-    _self_idx = Map.get(state, :id)
-    # IO.inspect "#{self_idx}, #{count}"
+    max_count = Map.get(state, :max_count)
+    if count < max_count do
+      new_state = Map.update!(state, :sum, &(&1/2))
+      new_state = Map.update!(new_state, :weight, &(&1/2))
 
-    if count < 3 do
-      {self_sum, self_weight} = {Map.get(state, :sum), Map.get(state, :weight)}
-      {new_sum, new_weight} = {(received_sum + self_sum) / 2, (received_weight + self_weight) / 2}
-      ratio_diff = abs((new_sum / new_weight) - (self_sum / self_weight))
-      new_state = Map.put(state, :sum, new_sum)
-      new_state = Map.put(new_state, :weight, new_weight)
+      {self_sum, self_weight} = {Map.get(new_state, :sum), Map.get(new_state, :weight)}
+      present_ratio = self_sum / self_weight
+      previous_ratio = Map.get(new_state, :ratio)
 
       new_state =
-        if ratio_diff < :math.pow(10, -10) do
-          if count == 2 do
-            parent_pid = Map.get(state, :parent)
-            Process.send(parent_pid, {:converged, new_sum / new_weight}, [])
+        if abs(present_ratio - previous_ratio) < :math.pow(10, -10) do
+
+          if count == max_count - 1 do
+            parent_pid = Map.get(new_state, :parent)
+            Process.send(parent_pid, {:converged, present_ratio}, [])
           end
+
           Map.update!(new_state, :count, &(&1 + 1))
         else
           Map.put(new_state, :count, 0)
         end
 
+      new_state = Map.put(new_state, :ratio, present_ratio)
       num_neighbors = Map.get(new_state, :num_neighbors)
       idx = :rand.uniform(num_neighbors)
       neighbor = get_in(state, [:neighbors, idx])
-      Process.send(neighbor, {:push_sum, {new_sum, new_weight}}, [])
+      Process.send(neighbor, {:pull_sum, {self_sum, self_weight}}, [])
+      Process.send_after(self(), {:push_sum, nil}, 100)
+
       {:noreply, new_state}
     else
       {:noreply, state}
     end
   end
+
+  defp pull_sum(state, {received_sum, received_weight}) do
+    ratio = Map.get(state, :ratio)
+    count = Map.get(state, :count)
+    # IO.inspect self()
+    # IO.puts "HERE, #{ratio}, #{count}"
+    count = Map.get(state, :count)
+    max_count = Map.get(state, :max_count)
+    new_state =
+      if count < max_count do
+        new_state = Map.update!(state, :sum, &(&1 + received_sum))
+        Map.update!(new_state, :weight, &(&1 + received_weight))
+      else
+        state
+      end
+
+    {:noreply, new_state}
+  end
+
+
 end
 
 GS.main()
