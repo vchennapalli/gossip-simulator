@@ -18,8 +18,8 @@ defmodule GS.Supervisor do
   def main(num_nodes, topology, algorithm) do
 
     topology =
-      if topology == "rand2D" and num_nodes < 600 do
-        IO.puts "No. of nodes is < 600. To avoid the case of non-convergence, modifying the topology to 2D grid"
+      if topology == "rand2D" and num_nodes < 500 do
+        IO.puts "No. of nodes is < 500. To avoid the case of non-convergence, modifying the topology to uniform 2D grid"
         "2D"
       else
         topology
@@ -33,15 +33,11 @@ defmodule GS.Supervisor do
         _ -> num_nodes
       end
 
-    initialize(num_nodes, topology, algorithm)
 
-    if algorithm == "gossip" do
-      hear_children_gossip(num_nodes)
-    else
-      cpc = 0.0  # convergence percentage condition
-      threshold = round(num_nodes * cpc)
-      _ratio = hear_children_sum(num_nodes, threshold)
-    end
+    {_, start_time, _} = initialize(num_nodes, topology, algorithm)
+    {_, end_time, _} = hear_children(num_nodes)
+
+    IO.puts "Time for convergence after beginning gossip/push-sum: #{end_time - start_time} secs"
 
   end
 
@@ -64,13 +60,11 @@ defmodule GS.Supervisor do
         {Map.get(worker_ids, start), nil, nil}
       end
 
-    # IO.inspect starter_pid
     if algorithm == "gossip" do
       Process.send(starter_pid, {:receive_gossip, "message"}, [])
     end
-    # else
-    #   Process.send(starter_pid, {:push_sum, {0, 0}}, [])
-    # end
+
+    :os.timestamp()
 
   end
 
@@ -93,26 +87,22 @@ defmodule GS.Supervisor do
     end
   end
 
-  def hear_children_gossip(n) do
+  def hear_children(n) do
     receive do
+      {:converged, _ratio, _idx} ->
+        n = n - 1
+        if n > 1 do
+          hear_children(n)
+        else
+          :os.timestamp()
+        end
       {:received} ->
         n = n - 1
         # IO.puts n
-        if n > 0 do
-          hear_children_gossip(n)
-        end
-    end
-  end
-
-  def hear_children_sum(n, threshold) do
-    receive do
-      {:converged, ratio} ->
-        IO.puts "#{ratio}, #{n}"
-        n = n - 1
-        if n > threshold do
-          hear_children_sum(n, threshold)
+        if n > 1 do
+          hear_children(n)
         else
-          ratio
+          :os.timestamp()
         end
     end
   end
@@ -184,10 +174,11 @@ defmodule GS.Worker do
   end
 
   def init(args) do
-    algorithm = Map.get(args, :algorithm)
-    if algorithm == "push-sum" do
-      Process.send_after(self(), {:push_sum, nil}, 100)
-    end
+    # algorithm = Map.get(args, :algorithm)
+    # num_nodes =
+    # if algorithm == "push-sum" do
+    #   Process.send_after(self(), {:push_sum, nil}, 10000)
+    # end
     {:ok, args}
   end
 
@@ -226,6 +217,7 @@ defmodule GS.Worker do
     new_state = Map.put(new_state, :num_neighbors, num_neighbors)
     super_pid = Map.get(new_state, :parent)
     Process.send(super_pid, {:ready}, [])
+    Process.send_after(self(), {:push_sum, nil}, 1000)
     {:noreply, new_state}
   end
 
@@ -459,7 +451,7 @@ defmodule GS.Worker do
 
   defp send_gossip(state, message) do
     count = Map.get(state, :count)
-    if count < 10 do
+    if count < 15 do
       num_neighbors = Map.get(state, :num_neighbors)
       _self_idx = Map.get(state, :id)
       idx = :rand.uniform(num_neighbors)
@@ -468,7 +460,7 @@ defmodule GS.Worker do
       Process.send(neighbor, {:receive_gossip, message}, [])
 
       #call yourself once in every 100 ms
-      Process.send_after(self(), {:send_gossip, message}, 100)
+      Process.send_after(self(), {:send_gossip, message}, 250)
     end
 
     {:noreply, state}
@@ -505,10 +497,10 @@ defmodule GS.Worker do
 
       new_state =
         if abs(present_ratio - previous_ratio) < :math.pow(10, -10) do
-
+          idx = Map.get(new_state, :id)
           if count == max_count - 1 do
             parent_pid = Map.get(new_state, :parent)
-            Process.send(parent_pid, {:converged, present_ratio}, [])
+            Process.send(parent_pid, {:converged, present_ratio, idx}, [])
           end
 
           Map.update!(new_state, :count, &(&1 + 1))
@@ -521,7 +513,7 @@ defmodule GS.Worker do
       idx = :rand.uniform(num_neighbors)
       neighbor = get_in(state, [:neighbors, idx])
       Process.send(neighbor, {:pull_sum, {self_sum, self_weight}}, [])
-      Process.send_after(self(), {:push_sum, nil}, 100)
+      Process.send_after(self(), {:push_sum, nil}, 250)
 
       {:noreply, new_state}
     else
@@ -530,8 +522,8 @@ defmodule GS.Worker do
   end
 
   defp pull_sum(state, {received_sum, received_weight}) do
-    ratio = Map.get(state, :ratio)
-    count = Map.get(state, :count)
+    # ratio = Map.get(state, :ratio)
+    # count = Map.get(state, :count)
     # IO.inspect self()
     # IO.puts "HERE, #{ratio}, #{count}"
     count = Map.get(state, :count)
@@ -546,8 +538,6 @@ defmodule GS.Worker do
 
     {:noreply, new_state}
   end
-
-
 end
 
 GS.main()
